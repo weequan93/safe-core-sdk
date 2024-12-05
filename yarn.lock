@@ -1796,10 +1796,9 @@
   resolved "https://registry.yarnpkg.com/@safe-global/safe-contracts/-/safe-contracts-1.4.1-build.0.tgz#5d82e2f3fd8430b4589df992b9ee2c71386082fe"
   integrity sha512-TIpoKJtMqLcLFoid0cvpxo8YTcnRUj95MHvxzwgPbJPRONOckNS6ebgGyBBRDmnpxFh34IBpPUZ7JD+z2Cfbbg==
 
-"@safe-global/safe-deployments@^1.37.9":
-  version "1.37.9"
-  resolved "https://registry.yarnpkg.com/@safe-global/safe-deployments/-/safe-deployments-1.37.9.tgz#efcc3633cab725c91a1961d09e6a6b70c4006b1f"
-  integrity sha512-j/4V5fJNddi4/oBhuDWSx2ocfXMkNGBpke2B3nPTIrzgXQam0wObkBQOe85tqjte9KEuDPW1D3bvvVCdz0WrRQ==
+"@safe-global/safe-deployments@https://github.com/weequan93/safe-deployments#deriw-dev":
+  version "1.37.19"
+  resolved "https://github.com/weequan93/safe-deployments#cc5a547e97f72fff7abd6c6dcb5609da3f369bba"
   dependencies:
     semver "^7.6.2"
 

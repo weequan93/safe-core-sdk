@@ -1737,7 +1737,7 @@
 
 "@safe-global/safe-deployments@https://github.com/weequan93/safe-deployments#deriw-dev":
   version "1.37.19"
-  resolved "https://github.com/weequan93/safe-deployments#622e98d04a657b06e1c30557452a92251c38fc59"
+  resolved "https://github.com/weequan93/safe-deployments#f5a303a1579d7f0bbd4ee756d4441d4a0f376315"
   dependencies:
     semver "^7.6.2"
 

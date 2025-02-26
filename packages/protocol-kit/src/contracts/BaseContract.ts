@@ -76,8 +76,9 @@ class BaseContract<ContractAbiType extends Abi> {
     customContractAbi?: ContractAbiType,
     deploymentType?: DeploymentType
   ) {
+    console.log("constructor",safeVersion, chainId, contractName)
     const deployment = getContractDeployment(safeVersion, chainId, contractName)
-
+    console.log("deployment", deployment)
     const resolvedAddress =
       customContractAddress ??
       this.#resolveAddress(
@@ -85,6 +86,7 @@ class BaseContract<ContractAbiType extends Abi> {
         deployment,
         deploymentType
       )
+    console.log("deploymentType", deploymentType)
 
     if (!resolvedAddress) {
       throw new Error(`Invalid ${contractName.replace('Version', '')} contract address`)

@@ -49,9 +49,7 @@
   "dependencies": {
     "semver": "^7.6.3"
   },
-  "bin": {
-    "testing-kit": "./bin/testing-kit.js"
-  },
+  "bin": "./bin/testing-kit.js",
   "peerDependencies": {
     "hardhat": "^2.19.3"
   }

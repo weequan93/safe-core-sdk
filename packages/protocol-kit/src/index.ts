@@ -25,17 +25,16 @@ import {
   encodeCreateProxyWithNonce,
   encodeSetupCallData,
   predictSafeAddress,
-  getPredictedSafeAddressInitCode
+  getPredictedSafeAddressInitCode,
+  getSafeAddressFromDeploymentTx
 } from './contracts/utils'
 import ContractManager from './managers/contractManager'
-import SafeFactory from './SafeFactory'
 import {
   EthSafeSignature,
   estimateTxBaseGas,
   estimateTxGas,
   estimateSafeTxGas,
   estimateSafeDeploymentGas,
-  extractPasskeyCoordinates,
   extractPasskeyData,
   validateEthereumAddress,
   validateEip3770Address
@@ -67,6 +66,7 @@ import {
 } from './utils/eip-712'
 import { createPasskeyClient } from './utils/passkeys/PasskeyClient'
 import getPasskeyOwnerAddress from './utils/passkeys/getPasskeyOwnerAddress'
+import generateOnChainIdentifier from './utils/on-chain-tracking/generateOnChainIdentifier'
 
 export {
   estimateTxBaseGas,
@@ -74,7 +74,6 @@ export {
   estimateSafeTxGas,
   estimateSafeDeploymentGas,
   extractPasskeyData,
-  extractPasskeyCoordinates,
   ContractManager,
   CreateCallBaseContract,
   createERC20TokenTransferTransaction,
@@ -82,9 +81,9 @@ export {
   EthSafeSignature,
   MultiSendCallOnlyBaseContract,
   MultiSendBaseContract,
+  generateOnChainIdentifier,
   PREDETERMINED_SALT_NONCE,
   SafeBaseContract,
-  SafeFactory,
   SafeProxyFactoryBaseContract,
   SafeTransactionOptionalProps,
   SignMessageLibBaseContract,
@@ -115,6 +114,7 @@ export {
   preimageSafeMessageHash,
   getEip712TxTypes,
   getEip712MessageTypes,
+  getSafeAddressFromDeploymentTx,
   hashSafeMessage,
   generateTypedData,
   SafeProvider,

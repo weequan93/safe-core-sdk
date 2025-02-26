@@ -7,14 +7,6 @@ export enum OperationType {
   DelegateCall // 1
 }
 
-export interface CreateProxyProps {
-  safeSingletonAddress: string
-  initializer: string
-  saltNonce: string
-  options?: TransactionOptions
-  callback?: (txHash: string) => void
-}
-
 export interface SafeSetupConfig {
   owners: string[]
   threshold: number
@@ -196,13 +188,22 @@ export interface EIP712TypedData {
   primaryType?: string
 }
 
+export const SignatureTypes = {
+  CONTRACT_SIGNATURE: 'CONTRACT_SIGNATURE',
+  EOA: 'EOA',
+  APPROVED_HASH: 'APPROVED_HASH',
+  ETH_SIGN: 'ETH_SIGN'
+} as const
+
+export type SignatureType = (typeof SignatureTypes)[keyof typeof SignatureTypes]
+
 export type SafeMultisigConfirmationResponse = {
   readonly owner: string
   readonly submissionDate: string
   readonly transactionHash?: string
   readonly confirmationType?: string
   readonly signature: string
-  readonly signatureType?: string
+  readonly signatureType: SignatureType
 }
 
 export type ListResponse<T> = {
@@ -212,6 +213,17 @@ export type ListResponse<T> = {
   readonly results: T[]
 }
 export type SafeMultisigConfirmationListResponse = ListResponse<SafeMultisigConfirmationResponse>
+
+export type DataDecoded = {
+  readonly method: string
+  readonly parameters: DecodedParameters[]
+}
+
+export type DecodedParameters = {
+  readonly name: string
+  readonly type: string
+  readonly value: string
+}
 
 export type SafeMultisigTransactionResponse = {
   readonly safe: string
@@ -232,14 +244,17 @@ export type SafeMultisigTransactionResponse = {
   readonly transactionHash: string
   readonly safeTxHash: string
   readonly executor?: string
-  readonly proposer: string
+  readonly proposer?: string
+  readonly proposedByDelegate?: string
   readonly isExecuted: boolean
   readonly isSuccessful?: boolean
   readonly ethGasPrice?: string
+  readonly maxFeePerGas?: string
+  readonly maxPriorityFeePerGas?: string
   readonly gasUsed?: number
   readonly fee?: string
   readonly origin: string
-  readonly dataDecoded?: string
+  readonly dataDecoded?: DataDecoded
   readonly confirmationsRequired: number
   readonly confirmations?: SafeMultisigConfirmationResponse[]
   readonly trusted: boolean
@@ -275,7 +290,7 @@ export type UserOperation = {
 
 export type SafeUserOperation = {
   safe: string
-  nonce: bigint
+  nonce: string
   initCode: string
   callData: string
   callGasLimit: bigint
@@ -321,21 +336,21 @@ export type SafeOperationConfirmation = {
   readonly modified: string
   readonly owner: string
   readonly signature: string
-  readonly signatureType: string
+  readonly signatureType: SignatureType
 }
 
 export type UserOperationResponse = {
   readonly ethereumTxHash: null | string
   readonly sender: string
   readonly userOperationHash: string
-  readonly nonce: number
+  readonly nonce: string
   readonly initCode: null | string
   readonly callData: null | string
-  readonly callGasLimit: number
-  readonly verificationGasLimit: number
-  readonly preVerificationGas: number
-  readonly maxFeePerGas: number
-  readonly maxPriorityFeePerGas: number
+  readonly callGasLimit: string
+  readonly verificationGasLimit: string
+  readonly preVerificationGas: string
+  readonly maxFeePerGas: string
+  readonly maxPriorityFeePerGas: string
   readonly paymaster: null | string
   readonly paymasterData: null | string
   readonly signature: string

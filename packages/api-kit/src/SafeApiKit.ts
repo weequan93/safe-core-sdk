@@ -12,6 +12,7 @@ import {
   ListOptions,
   ModulesResponse,
   OwnerResponse,
+  PendingTransactionsOptions,
   ProposeTransactionProps,
   SafeCreationInfoResponse,
   SafeDelegateListResponse,
@@ -70,7 +71,7 @@ class SafeApiKit {
         )
       }
 
-      this.#txServiceBaseUrl = `${url}/api`
+      this.#txServiceBaseUrl = url
     }
   }
 
@@ -114,20 +115,28 @@ class SafeApiKit {
   /**
    * Decodes the specified Safe transaction data.
    *
-   * @param data - The Safe transaction data
+   * @param data - The Safe transaction data. '0x' prefixed hexadecimal string.
+   * @param to - The address of the receiving contract. If provided, the decoded data will be more accurate, as in case of an ABI collision the Safe Transaction Service would know which ABI to use
    * @returns The transaction data decoded
    * @throws "Invalid data"
    * @throws "Not Found"
    * @throws "Ensure this field has at least 1 hexadecimal chars (not counting 0x)."
    */
-  async decodeData(data: string): Promise<any> {
+  async decodeData(data: string, to?: string): Promise<any> {
     if (data === '') {
       throw new Error('Invalid data')
     }
+
+    const dataDecoderRequest: { data: string; to?: string } = { data }
+
+    if (to) {
+      dataDecoderRequest.to = to
+    }
+
     return sendRequest({
       url: `${this.#txServiceBaseUrl}/v1/data-decoder/`,
       method: HttpMethod.Post,
-      body: { data }
+      body: dataDecoderRequest
     })
   }
 
@@ -249,6 +258,14 @@ class SafeApiKit {
     return sendRequest({
       url: `${this.#txServiceBaseUrl}/v1/safes/${address}/`,
       method: HttpMethod.Get
+    }).then((response: any) => {
+      // FIXME remove when the transaction service returns the singleton property instead of masterCopy
+      if (!response?.singleton) {
+        const { masterCopy, ...rest } = response
+        return { ...rest, singleton: masterCopy } as SafeInfoResponse
+      }
+
+      return response as SafeInfoResponse
     })
   }
 
@@ -398,6 +415,14 @@ class SafeApiKit {
     return sendRequest({
       url: `${this.#txServiceBaseUrl}/v1/safes/${address}/creation/`,
       method: HttpMethod.Get
+    }).then((response: any) => {
+      // FIXME remove when the transaction service returns the singleton property instead of masterCopy
+      if (!response?.singleton) {
+        const { masterCopy, ...rest } = response
+        return { ...rest, singleton: masterCopy } as SafeCreationInfoResponse
+      }
+
+      return response as SafeCreationInfoResponse
     })
   }
 
@@ -528,7 +553,7 @@ class SafeApiKit {
    * Returns the list of multi-signature transactions that are waiting for the confirmation of the Safe owners.
    *
    * @param safeAddress - The Safe address
-   * @param currentNonce - Current nonce of the Safe
+   * @param currentNonce - Deprecated, use inside object property: Current nonce of the Safe.
    * @returns The list of transactions waiting for the confirmation of the Safe owners
    * @throws "Invalid Safe address"
    * @throws "Invalid data"
@@ -537,15 +562,70 @@ class SafeApiKit {
   async getPendingTransactions(
     safeAddress: string,
     currentNonce?: number
+  ): Promise<SafeMultisigTransactionListResponse>
+  /**
+   * Returns the list of multi-signature transactions that are waiting for the confirmation of the Safe owners.
+   *
+   * @param safeAddress - The Safe address
+   * @param {PendingTransactionsOptions} options The options to filter the list of transactions
+   * @returns The list of transactions waiting for the confirmation of the Safe owners
+   * @throws "Invalid Safe address"
+   * @throws "Invalid data"
+   * @throws "Invalid ethereum address"
+   */
+  async getPendingTransactions(
+    safeAddress: string,
+    { currentNonce, hasConfirmations, ordering, limit, offset }: PendingTransactionsOptions
+  ): Promise<SafeMultisigTransactionListResponse>
+  async getPendingTransactions(
+    safeAddress: string,
+    propsOrCurrentNonce: PendingTransactionsOptions | number = {}
   ): Promise<SafeMultisigTransactionListResponse> {
     if (safeAddress === '') {
       throw new Error('Invalid Safe address')
     }
+
+    // TODO: Remove @deprecated migration code
+    let currentNonce: number | undefined
+    let hasConfirmations: boolean | undefined
+    let ordering: string | undefined
+    let limit: number | undefined
+    let offset: number | undefined
+    if (typeof propsOrCurrentNonce === 'object') {
+      ;({ currentNonce, hasConfirmations, ordering, limit, offset } = propsOrCurrentNonce)
+    } else {
+      console.warn(
+        'Deprecated: Use `currentNonce` inside an object instead. See `PendingTransactionsOptions`.'
+      )
+      currentNonce = propsOrCurrentNonce
+    }
+    // END of @deprecated migration code
+
     const { address } = this.#getEip3770Address(safeAddress)
     const nonce = currentNonce ? currentNonce : (await this.getSafeInfo(address)).nonce
 
+    const url = new URL(
+      `${this.#txServiceBaseUrl}/v1/safes/${address}/multisig-transactions/?executed=false&nonce__gte=${nonce}`
+    )
+
+    if (hasConfirmations) {
+      url.searchParams.set('has_confirmations', hasConfirmations.toString())
+    }
+
+    if (ordering) {
+      url.searchParams.set('ordering', ordering)
+    }
+
+    if (limit != null) {
+      url.searchParams.set('limit', limit.toString())
+    }
+
+    if (offset != null) {
+      url.searchParams.set('offset', offset.toString())
+    }
+
     return sendRequest({
-      url: `${this.#txServiceBaseUrl}/v1/safes/${address}/multisig-transactions/?executed=false&nonce__gte=${nonce}`,
+      url: url.toString(),
       method: HttpMethod.Get
     })
   }
@@ -592,16 +672,19 @@ class SafeApiKit {
    * @throws "Invalid data"
    * @throws "Invalid ethereum address"
    */
-  async getNextNonce(safeAddress: string): Promise<number> {
+  async getNextNonce(safeAddress: string): Promise<string> {
     if (safeAddress === '') {
       throw new Error('Invalid Safe address')
     }
     const { address } = this.#getEip3770Address(safeAddress)
     const pendingTransactions = await this.getPendingTransactions(address)
     if (pendingTransactions.results.length > 0) {
-      const nonces = pendingTransactions.results.map((tx) => tx.nonce)
-      const lastNonce = Math.max(...nonces)
-      return lastNonce + 1
+      const maxNonce = pendingTransactions.results.reduce((acc, tx) => {
+        const curr = BigInt(tx.nonce)
+        return curr > acc ? curr : acc
+      }, 0n)
+
+      return (maxNonce + 1n).toString()
     }
     const safeInfo = await this.getSafeInfo(address)
     return safeInfo.nonce
@@ -839,7 +922,7 @@ class SafeApiKit {
       url: `${this.#txServiceBaseUrl}/v1/safes/${safeAddress}/safe-operations/`,
       method: HttpMethod.Post,
       body: {
-        nonce: Number(userOperation.nonce),
+        nonce: userOperation.nonce,
         initCode: isEmptyData(userOperation.initCode) ? null : userOperation.initCode,
         callData: userOperation.callData,
         callGasLimit: userOperation.callGasLimit.toString(),

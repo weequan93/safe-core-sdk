@@ -19,7 +19,10 @@ import {
   encodeSetupCallData,
   getChainSpecificDefaultSaltNonce,
   getPredictedSafeAddressInitCode,
-  predictSafeAddress
+  predictSafeAddress,
+  toTxResult,
+  validateSafeAccountConfig,
+  validateSafeDeploymentConfig
 } from './contracts/utils'
 import { ContractInfo, DEFAULT_SAFE_VERSION, getContractInfo } from './contracts/config'
 import ContractManager from './managers/contractManager'
@@ -40,7 +43,8 @@ import {
   SigningMethodType,
   SwapOwnerTxParams,
   SafeModulesPaginated,
-  RemovePasskeyOwnerTxParams
+  RemovePasskeyOwnerTxParams,
+  PasskeyArgType
 } from './types'
 import {
   EthSafeSignature,
@@ -57,7 +61,8 @@ import {
   generateSignature,
   preimageSafeMessageHash,
   preimageSafeTransactionHash,
-  adjustVInSignature
+  adjustVInSignature,
+  extractPasskeyData
 } from './utils'
 import EthSafeTransaction from './utils/transactions/SafeTransaction'
 import { SafeTransactionOptionalProps } from './utils/transactions/types'
@@ -79,9 +84,11 @@ import SafeMessage from './utils/messages/SafeMessage'
 import semverSatisfies from 'semver/functions/satisfies'
 import SafeProvider from './SafeProvider'
 import { asHash, asHex } from './utils/types'
-import { Hash, Hex } from 'viem'
+import { Hash, Hex, SendTransactionParameters } from 'viem'
 import getPasskeyOwnerAddress from './utils/passkeys/getPasskeyOwnerAddress'
 import createPasskeyDeploymentTransaction from './utils/passkeys/createPasskeyDeploymentTransaction'
+import generateOnChainIdentifier from './utils/on-chain-tracking/generateOnChainIdentifier'
+import { getProtocolKitVersion } from './utils/getProtocolKitVersion'
 
 const EQ_OR_GT_1_4_1 = '>=1.4.1'
 const EQ_OR_GT_1_3_0 = '>=1.3.0'
@@ -97,6 +104,9 @@ class Safe {
 
   #MAGIC_VALUE = '0x1626ba7e'
   #MAGIC_VALUE_BYTES = '0x20c13b0b'
+
+  // on-chain Analytics
+  #onchainIdentifier: string = ''
 
   /**
    * Creates an instance of the Safe Core SDK.
@@ -122,7 +132,17 @@ class Safe {
    * @throws "MultiSendCallOnly contract is not deployed on the current network"
    */
   async #initializeProtocolKit(config: SafeConfig) {
-    const { provider, signer, isL1SafeSingleton, contractNetworks } = config
+    const { provider, signer, isL1SafeSingleton, contractNetworks, onchainAnalytics } = config
+
+    if (onchainAnalytics?.project) {
+      const { project, platform } = onchainAnalytics
+      this.#onchainIdentifier = generateOnChainIdentifier({
+        project,
+        platform,
+        tool: 'protocol-kit',
+        toolVersion: getProtocolKitVersion()
+      })
+    }
 
     this.#safeProvider = await SafeProvider.init({
       provider,
@@ -280,6 +300,7 @@ class Safe {
       return predictSafeAddress({
         safeProvider: this.#safeProvider,
         chainId,
+        isL1SafeSingleton: this.#contractManager.isL1SafeSingleton,
         customContracts: this.#contractManager.contractNetworks?.[chainId.toString()],
         ...this.#predictedSafe
       })
@@ -877,7 +898,7 @@ class Safe {
    */
   async getOwnersWhoApprovedTx(txHash: string): Promise<string[]> {
     if (!this.#contractManager.safeContract) {
-      throw new Error('Safe is not deployed')
+      return []
     }
 
     const owners = await this.getOwners()
@@ -908,6 +929,13 @@ class Safe {
     fallbackHandlerAddress: string,
     options?: SafeTransactionOptionalProps
   ): Promise<SafeTransaction> {
+    const safeVersion = await this.getContractVersion()
+    if (this.#predictedSafe && !hasSafeFeature(SAFE_FEATURES.ACCOUNT_ABSTRACTION, safeVersion)) {
+      throw new Error(
+        'Account Abstraction functionality is not available for Safes with version lower than v1.3.0'
+      )
+    }
+
     const safeTransactionData = {
       to: await this.getAddress(),
       value: '0',
@@ -933,6 +961,13 @@ class Safe {
   async createDisableFallbackHandlerTx(
     options?: SafeTransactionOptionalProps
   ): Promise<SafeTransaction> {
+    const safeVersion = await this.getContractVersion()
+    if (this.#predictedSafe && !hasSafeFeature(SAFE_FEATURES.ACCOUNT_ABSTRACTION, safeVersion)) {
+      throw new Error(
+        'Account Abstraction functionality is not available for Safes with version lower than v1.3.0'
+      )
+    }
+
     const safeTransactionData = {
       to: await this.getAddress(),
       value: '0',
@@ -1307,31 +1342,9 @@ class Safe {
       ? await this.toSafeTransactionType(safeTransaction)
       : safeTransaction
 
-    const signedSafeTransaction = await this.copyTransaction(transaction)
+    const signedSafeTransaction = await this.#addPreValidatedSignature(transaction)
 
-    const txHash = await this.getTransactionHash(signedSafeTransaction)
-    const ownersWhoApprovedTx = await this.getOwnersWhoApprovedTx(txHash)
-    for (const owner of ownersWhoApprovedTx) {
-      signedSafeTransaction.addSignature(generatePreValidatedSignature(owner))
-    }
-    const threshold = await this.getThreshold()
-    const signerAddress = await this.#safeProvider.getSignerAddress()
-    if (!signerAddress) {
-      throw new Error('The protocol-kit requires a signer to use this method')
-    }
-    const addressIsOwner = await this.isOwner(signerAddress)
-    if (threshold > signedSafeTransaction.signatures.size && addressIsOwner) {
-      signedSafeTransaction.addSignature(generatePreValidatedSignature(signerAddress))
-    }
-
-    if (threshold > signedSafeTransaction.signatures.size) {
-      const signaturesMissing = threshold - signedSafeTransaction.signatures.size
-      throw new Error(
-        `There ${signaturesMissing > 1 ? 'are' : 'is'} ${signaturesMissing} signature${
-          signaturesMissing > 1 ? 's' : ''
-        } missing`
-      )
-    }
+    await this.#isReadyToExecute(signedSafeTransaction)
 
     const value = BigInt(signedSafeTransaction.data.value)
     if (value !== 0n) {
@@ -1339,6 +1352,34 @@ class Safe {
       if (value > balance) {
         throw new Error('Not enough Ether funds')
       }
+    }
+
+    const signerAddress = await this.#safeProvider.getSignerAddress()
+
+    if (this.#onchainIdentifier) {
+      const encodedTransaction = await this.getEncodedTransaction(signedSafeTransaction)
+
+      const transaction = {
+        to: await this.getAddress(),
+        value: 0n,
+        data: encodedTransaction + this.#onchainIdentifier
+      }
+
+      const signer = await this.#safeProvider.getExternalSigner()
+
+      if (!signer) {
+        throw new Error('A signer must be set')
+      }
+
+      const hash = await signer.sendTransaction({
+        ...transaction,
+        account: signer.account,
+        ...options
+      } as SendTransactionParameters)
+
+      const provider = this.#safeProvider.getExternalProvider()
+
+      return toTxResult(provider, hash, options)
     }
 
     const txResponse = await this.#contractManager.safeContract.execTransaction(
@@ -1349,6 +1390,58 @@ class Safe {
       }
     )
     return txResponse
+  }
+
+  /**
+   * Adds a PreValidatedSignature to the transaction if the threshold is not reached.
+   *
+   * @async
+   * @param {SafeTransaction} transaction - The transaction to add a signature to.
+   * @returns {Promise<SafeTransaction>} A promise that resolves to the signed transaction.
+   */
+  async #addPreValidatedSignature(transaction: SafeTransaction): Promise<SafeTransaction> {
+    const signedSafeTransaction = await this.copyTransaction(transaction)
+
+    const txHash = await this.getTransactionHash(signedSafeTransaction)
+    const ownersWhoApprovedTx = await this.getOwnersWhoApprovedTx(txHash)
+
+    for (const owner of ownersWhoApprovedTx) {
+      signedSafeTransaction.addSignature(generatePreValidatedSignature(owner))
+    }
+
+    const owners = await this.getOwners()
+    const threshold = await this.getThreshold()
+    const signerAddress = await this.#safeProvider.getSignerAddress()
+
+    if (
+      threshold > signedSafeTransaction.signatures.size &&
+      signerAddress &&
+      owners.includes(signerAddress)
+    ) {
+      signedSafeTransaction.addSignature(generatePreValidatedSignature(signerAddress))
+    }
+
+    return signedSafeTransaction
+  }
+
+  /**
+   * Checks if the transaction has enough signatures to be executed.
+   *
+   * @async
+   * @param {SafeTransaction} transaction - The Safe transaction to check.
+   * @throws Will throw an error if the required number of signatures is not met.
+   */
+  async #isReadyToExecute(transaction: SafeTransaction) {
+    const threshold = await this.getThreshold()
+
+    if (threshold > transaction.signatures.size) {
+      const signaturesMissing = threshold - transaction.signatures.size
+      throw new Error(
+        `There ${signaturesMissing > 1 ? 'are' : 'is'} ${signaturesMissing} signature${
+          signaturesMissing > 1 ? 's' : ''
+        } missing`
+      )
+    }
   }
 
   /**
@@ -1397,15 +1490,13 @@ class Safe {
    * @async
    * @param {SafeTransaction} safeTransaction - The Safe transaction to be wrapped into the deployment batch.
    * @param {TransactionOptions} [transactionOptions] - Optional. Options for the transaction, such as from, gas price, gas limit, etc.
-   * @param {string} [customSaltNonce] - Optional. a Custom salt nonce to be used for the deployment of the Safe. If not provided, a default value is used.
    * @returns {Promise<Transaction>} A promise that resolves to a Transaction object representing the prepared batch of transactions.
    * @throws Will throw an error if the safe is already deployed.
    *
    */
   async wrapSafeTransactionIntoDeploymentBatch(
     safeTransaction: SafeTransaction,
-    transactionOptions?: TransactionOptions,
-    customSaltNonce?: string
+    transactionOptions?: TransactionOptions
   ): Promise<Transaction> {
     const isSafeDeployed = await this.isSafeDeployed()
 
@@ -1415,7 +1506,15 @@ class Safe {
     }
 
     // we create the deployment transaction
-    const safeDeploymentTransaction = await this.createSafeDeploymentTransaction(customSaltNonce)
+    const safeDeploymentTransaction = await this.createSafeDeploymentTransaction()
+
+    // remove the onchain idendifier if it is included
+    if (safeDeploymentTransaction.data.endsWith(this.#onchainIdentifier)) {
+      safeDeploymentTransaction.data = safeDeploymentTransaction.data.replace(
+        this.#onchainIdentifier,
+        ''
+      )
+    }
 
     // First transaction of the batch: The Safe deployment Transaction
     const safeDeploymentBatchTransaction = {
@@ -1437,52 +1536,63 @@ class Safe {
     const transactions = [safeDeploymentBatchTransaction, safeBatchTransaction]
 
     // this is the transaction with the batch
-    const safeDeploymentBatch = await this.createTransactionBatch(transactions, transactionOptions)
+    const safeDeploymentBatch = await this.createTransactionBatch(
+      transactions,
+      transactionOptions,
+      !!this.#onchainIdentifier // include the on chain identifier
+    )
 
     return safeDeploymentBatch
   }
 
   /**
-   * Creates a Safe deployment transaction.
+   * Creates a transaction to deploy a Safe Account.
    *
-   * This function prepares a transaction for the deployment of a Safe.
-   * Both the saltNonce and options parameters are optional, and if not
-   * provided, default values will be used.
-   *
-   * @async
-   * @param {string} [customSaltNonce] - Optional. a Custom salt nonce to be used for the deployment of the Safe. If not provided, a default value is used.
-   * @param {TransactionOptions} [options] - Optional. Options for the transaction, such as gas price, gas limit, etc.
-   * @returns {Promise<Transaction>} A promise that resolves to a Transaction object representing the prepared Safe deployment transaction.
-   *
+   * @returns {Promise<Transaction>} Returns a promise that resolves to an Ethereum transaction with the fields `to`, `value`, and `data`, which can be used to deploy the Safe Account.
    */
-  async createSafeDeploymentTransaction(
-    customSaltNonce?: string,
-    transactionOptions?: TransactionOptions
-  ): Promise<Transaction> {
+  async createSafeDeploymentTransaction(): Promise<Transaction> {
     if (!this.#predictedSafe) {
-      throw new Error('Predict Safe should be present')
+      throw new Error('Predict Safe should be present to build the Safe deployement transaction')
     }
 
-    const { safeAccountConfig, safeDeploymentConfig } = this.#predictedSafe
+    const { safeAccountConfig, safeDeploymentConfig = {} } = this.#predictedSafe
 
-    const safeVersion = this.getContractVersion()
+    validateSafeAccountConfig(safeAccountConfig)
+    validateSafeDeploymentConfig(safeDeploymentConfig)
+
     const safeProvider = this.#safeProvider
     const chainId = await safeProvider.getChainId()
+    const safeVersion = safeDeploymentConfig?.safeVersion || DEFAULT_SAFE_VERSION
+    const saltNonce = safeDeploymentConfig?.saltNonce || getChainSpecificDefaultSaltNonce(chainId)
+
+    // we only check if the safe is deployed if safeVersion >= 1.3.0
+    if (hasSafeFeature(SAFE_FEATURES.ACCOUNT_ABSTRACTION, safeVersion)) {
+      const isSafeDeployed = await this.isSafeDeployed()
+
+      // if the safe is already deployed throws an error
+      if (isSafeDeployed) {
+        throw new Error('Safe already deployed')
+      }
+    }
+
     const isL1SafeSingleton = this.#contractManager.isL1SafeSingleton
     const customContracts = this.#contractManager.contractNetworks?.[chainId.toString()]
+    const deploymentType = this.#predictedSafe.safeDeploymentConfig?.deploymentType
 
     const safeSingletonContract = await getSafeContract({
       safeProvider,
       safeVersion,
       isL1SafeSingleton,
-      customContracts
+      customContracts,
+      deploymentType
     })
 
     // we use the SafeProxyFactory.sol contract, see: https://github.com/safe-global/safe-contracts/blob/main/contracts/proxies/SafeProxyFactory.sol
     const safeProxyFactoryContract = await getSafeProxyFactoryContract({
       safeProvider,
       safeVersion,
-      customContracts
+      customContracts,
+      deploymentType
     })
 
     // this is the call to the setup method that sets the threshold & owners of the new Safe, see: https://github.com/safe-global/safe-contracts/blob/main/contracts/Safe.sol#L95
@@ -1490,16 +1600,11 @@ class Safe {
       safeProvider,
       safeContract: safeSingletonContract,
       safeAccountConfig: safeAccountConfig,
-      customContracts
+      customContracts,
+      deploymentType
     })
 
-    const saltNonce =
-      customSaltNonce ||
-      safeDeploymentConfig?.saltNonce ||
-      getChainSpecificDefaultSaltNonce(chainId)
-
     const safeDeployTransactionData = {
-      ...transactionOptions, // optional transaction options like from, gasLimit, gasPrice...
       to: safeProxyFactoryContract.getAddress(),
       value: '0',
       // we use the createProxyWithNonce method to create the Safe in a deterministic address, see: https://github.com/safe-global/safe-contracts/blob/main/contracts/proxies/SafeProxyFactory.sol#L52
@@ -1508,6 +1613,10 @@ class Safe {
         asHex(initializer), // call to the setup method to set the threshold & owners of the new Safe
         BigInt(saltNonce)
       ])
+    }
+
+    if (this.#onchainIdentifier) {
+      safeDeployTransactionData.data += this.#onchainIdentifier
     }
 
     return safeDeployTransactionData
@@ -1521,12 +1630,14 @@ class Safe {
    * @function createTransactionBatch
    * @param {MetaTransactionData[]} transactions - An array of MetaTransactionData objects to be batched together.
    * @param {TransactionOption} [transactionOptions] - Optional TransactionOption object to specify additional options for the transaction batch.
+   * @param {boolean} [includeOnchainIdentifier=false] - A flag indicating whether to append the onchain identifier to the data field of the resulting transaction.
    * @returns {Promise<Transaction>} A Promise that resolves with the created transaction batch.
    *
    */
   async createTransactionBatch(
     transactions: MetaTransactionData[],
-    transactionOptions?: TransactionOptions
+    transactionOptions?: TransactionOptions,
+    includeOnchainIdentifier: boolean = false
   ): Promise<Transaction> {
     // we use the MultiSend contract to create the batch, see: https://github.com/safe-global/safe-contracts/blob/main/contracts/libraries/MultiSendCallOnly.sol
     const multiSendCallOnlyContract = this.#contractManager.multiSendCallOnlyContract
@@ -1541,6 +1652,10 @@ class Safe {
       to: multiSendCallOnlyContract.getAddress(),
       value: '0',
       data: batchData
+    }
+
+    if (includeOnchainIdentifier) {
+      transactionBatch.data += this.#onchainIdentifier
     }
 
     return transactionBatch
@@ -1648,6 +1763,19 @@ class Safe {
     contractAddress: string
   }): ContractInfo | undefined => {
     return getContractInfo(contractAddress)
+  }
+
+  getOnchainIdentifier(): string {
+    return this.#onchainIdentifier
+  }
+
+  /**
+   * This method creates a signer to be used with the init method
+   * @param {Credential} credential - The credential to be used to create the signer. Can be generated in the web with navigator.credentials.create
+   * @returns {PasskeyArgType} - The signer to be used with the init method
+   */
+  static createPasskeySigner = async (credential: Credential): Promise<PasskeyArgType> => {
+    return extractPasskeyData(credential)
   }
 }
 

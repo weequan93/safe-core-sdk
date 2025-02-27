@@ -1195,9 +1195,9 @@
     cbor "^9.0.2"
 
 "@safe-global/testing-kit@^0.0.1-alpha.1":
-  version "0.1.2"
-  resolved "https://registry.npmmirror.com/@safe-global/testing-kit/-/testing-kit-0.1.2.tgz#62950f12629dd3d295a863924492b603bd3e3aa6"
-  integrity sha512-edRDgvHibDvY+HmdwtjZ4uS6dpxh+h0alrMzTvqyqV5fx/QmQQ65lVWafW2R0sfcoSPEAUKmeb1c5yAyltf/sA==
+  version "0.2.0-alpha.3"
+  resolved "https://registry.npmmirror.com/@safe-global/testing-kit/-/testing-kit-0.2.0-alpha.3.tgz#b0ef96d912217344eb9df099afb5dd806ca2a13e"
+  integrity sha512-QXHoneWKO/aEcNbVMhRUtM/5ef3r187MpBHNvLaiTH3kaE9lflIYVRBo0MiQBEU8DpaH4KQKYCN6WizNfHWJnA==
   dependencies:
     semver "^7.6.3"
 
